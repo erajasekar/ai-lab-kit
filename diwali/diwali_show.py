@@ -35,7 +35,7 @@ import time
 import wave
 
 LED_COUNT = 12
-SR = 22050
+SR = 44100  # CD rate: avoids ALSA resampling artifacts on the Pi
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------------------------------------------------------- notes
@@ -95,7 +95,7 @@ class Score:
         self._end(t + dur)
 
     def drone(self, t, beats, amp=0.18):
-        for n in ("C3", "G3"):
+        for n in ("C4", "G4"):
             self.audio.append(("drone", t, self.b(beats), freq(midi(n)), 0, amp))
 
     def mark(self, t, name, data=None):
@@ -154,7 +154,7 @@ def render_wav(score, path):
                 tt = k / SR
                 f = 55 + 90 * math.exp(-tt * 18)
                 ph += tp * f / SR
-                out.append(amp * 1.3 * math.exp(-tt * 9) * math.sin(ph)
+                out.append(amp * 1.0 * math.exp(-tt * 9) * (math.sin(ph) + 0.6 * math.sin(2 * ph) + 0.4 * math.sin(3 * ph))
                            + amp * 0.3 * math.exp(-tt * 60) * rng.uniform(-1, 1))
             mix(i0, out)
         elif kind == "tilli":
@@ -173,11 +173,11 @@ def render_wav(score, path):
             lp = 0.0
             for k in range(L):
                 tt = k / SR
-                ph += tp * (40 + 60 * math.exp(-tt * 8)) / SR
+                ph += tp * (70 + 90 * math.exp(-tt * 8)) / SR
                 lp += 0.08 * (rng.uniform(-1, 1) - lp)
                 crackle = (rng.uniform(-1, 1) * 0.5
                            if rng.random() < 0.02 * math.exp(-tt * 2) else 0)
-                out.append(amp * (1.2 * math.exp(-tt * 4) * math.sin(ph)
+                out.append(amp * (1.0 * math.exp(-tt * 4) * (math.sin(ph) + 0.5 * math.sin(2 * ph))
                                   + 2.0 * math.exp(-tt * 6) * lp
                                   + math.exp(-tt * 3) * crackle))
             mix(i0, out)
@@ -192,12 +192,13 @@ def render_wav(score, path):
             mix(i0, out)
 
     peak = max(max(buf), -min(buf), 1e-9)
-    scale = 0.9 * 32767 / peak
+    scale = 0.6 * 32767 / peak  # headroom: small amps clip/distort easily
     with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
+        wf.setnchannels(2)
         wf.setsampwidth(2)
         wf.setframerate(SR)
-        wf.writeframes(b"".join(struct.pack("<h", int(v * scale)) for v in buf))
+        wf.writeframes(b"".join(
+            struct.pack("<hh", int(v * scale), int(v * scale)) for v in buf))
 
 
 # ---------------------------------------------------------------- LED engine
@@ -472,12 +473,32 @@ def open_strip(sim):
     return SimStrip()
 
 
-def start_audio(path):
+def find_speaker():
+    """Pick an ALSA output: USB speaker first, then the Fusion HAT card."""
+    try:
+        out = subprocess.run(["aplay", "-l"], capture_output=True, text=True).stdout
+    except Exception:
+        return None
+    cards = [l for l in out.splitlines() if l.startswith("card ")]
+    for keys in (("usb",), ("voicehat", "googlevoi")):
+        for line in cards:
+            low = line.lower()
+            if any(k in low for k in keys):
+                return "plughw:%s,0" % line.split()[1].rstrip(":")
+    return None
+
+
+def start_audio(path, device=None):
     try:  # Fusion HAT speaker amp (name from SunFounder lib; harmless if absent)
         from fusion_hat.device import enable_speaker
         enable_speaker()
     except Exception:
         pass
+    device = device or find_speaker()
+    if device:
+        print("Audio device:", device)
+    if device and shutil.which("aplay"):
+        return subprocess.Popen(["aplay", "-q", "-D", device, path])
     for cmd in (["aplay", "-q"], ["paplay"], ["afplay"],
                 ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"]):
         if shutil.which(cmd[0]):
@@ -502,7 +523,7 @@ def run(key, args):
     events = list(score.events)
     ei = 0
     total = score.end
-    proc = None if args.no_audio else start_audio(wav)
+    proc = None if args.no_audio else start_audio(wav, args.device)
     t0 = time.monotonic()
     last = 0.0
     try:
@@ -540,6 +561,8 @@ def main():
                     help="seconds to delay LEDs vs audio (negative = earlier)")
     ap.add_argument("--regen", action="store_true", help="re-render the WAV")
     ap.add_argument("--sim", action="store_true", help="draw ring in terminal")
+    ap.add_argument("--device", help="ALSA device for aplay, e.g. plughw:0,0 "
+                    "(list with: aplay -l)")
     ap.add_argument("--no-audio", action="store_true")
     args = ap.parse_args()
 
