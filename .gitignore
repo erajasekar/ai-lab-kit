@@ -10,3 +10,6 @@ backups/*
 .claude/
 yolo/
 
+
+# generated Diwali show audio
+diwali/*.wav
