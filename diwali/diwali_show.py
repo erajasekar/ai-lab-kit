@@ -583,7 +583,12 @@ OPTIONS = {
     "2": ("Patakha Fireworks", build_fireworks, led_fireworks),
     "3": ("Rangoli Colours", build_rangoli, led_rangoli),
     "4": ("Firecracker Sound (audio-synced)", None, None),
+    "5": ("Fireworks Diwali Celebration (audio-synced)", None, None),
 }
+
+# options that play a WAV from audio/ and light the ring from the sound itself
+AUDIO_OPTIONS = {"4": "fire-cracker-sound.wav",
+                 "5": "fireworks-diwali-celebration.wav"}
 
 
 # ---------------------------------------------------------------- hardware
@@ -661,8 +666,8 @@ def start_audio(path, device=None):
 def run(key, args):
     title, build, leds = OPTIONS[key]
     print("\n=== %s ===" % title)
-    if key == "4":
-        run_file(os.path.join(AUDIO_DIR, "fire-cracker-sound.wav"), args.style, args)
+    if key in AUDIO_OPTIONS:
+        run_file(os.path.join(AUDIO_DIR, AUDIO_OPTIONS[key]), args.style, args)
         return
     score = build()
     score.events.sort(key=lambda e: e[0])
@@ -713,7 +718,7 @@ def main():
     ap.add_argument("--latency", type=float, default=0.0,
                     help="seconds to delay LEDs vs audio (negative = earlier)")
     ap.add_argument("--style", choices=["fireworks", "diya", "rangoli"],
-                    default="fireworks", help="light style for option 4")
+                    default="fireworks", help="light style for options 4 and 5")
     ap.add_argument("--regen", action="store_true", help="re-render the WAV")
     ap.add_argument("--sim", action="store_true", help="draw ring in terminal")
     ap.add_argument("--device", help="ALSA device for aplay, e.g. plughw:0,0 "
@@ -725,7 +730,7 @@ def main():
     if not key:
         for k, (name, _, _) in OPTIONS.items():
             print("  %s) %s" % (k, name))
-        key = input("Choose 1-4 (or 'all'): ").strip()
+        key = input("Choose 1-5 (or 'all'): ").strip()
     for k in (["1", "2", "3"] if key == "all" else [key]):
         run(k, args)
 

@@ -13,3 +13,7 @@ yolo/
 
 # generated Diwali show audio
 diwali/*.wav
+diwali/*.play.wav
+diwali/*.ana.wav
+__pycache__/
+
