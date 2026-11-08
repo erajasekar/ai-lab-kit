@@ -433,10 +433,156 @@ def led_rangoli():
     return ring, on_event, ambient, None
 
 
+# ---- Option 4: sync to an audio file (WAV) -------------------------------
+# Works on any 16-bit PCM WAV. Convert mp3 -> wav once on a computer:
+#   ffmpeg -i song.mp3 -ac 2 -ar 44100 -c:a pcm_s16le audio/song.wav
+import array
+
+HOP_SEC = 0.01     # analysis frame = 10 ms
+AUDIO_DIR = os.path.join(HERE, "audio")
+
+
+def analyse_wav(path):
+    """Return (onsets, envelope, seconds). onsets = [(t, strength 0-1, treble 0-1)]."""
+    with wave.open(path) as w:
+        nch, rate, raw = w.getnchannels(), w.getframerate(), w.readframes(w.getnframes())
+    x = array.array("h")
+    x.frombytes(raw)
+    if nch == 2:                                   # stereo -> mono
+        x = array.array("h", [(a + b) >> 1 for a, b in zip(x[0::2], x[1::2])])
+    step = max(1, round(rate / 22050))             # decimate to ~22 kHz
+    x = x[::step]
+    arate = rate / step
+    hop = max(1, int(arate * HOP_SEC))
+    fps = arate / hop
+
+    a, lp = 0.11, 0.0                              # one-pole low-pass (~400 Hz)
+    low_e, high_e = [], []
+    for f in range(len(x) // hop):
+        sl = sh = 0.0
+        for v in x[f * hop:(f + 1) * hop]:
+            lp += a * (v - lp)
+            h = v - lp
+            sl += lp * lp
+            sh += h * h
+        low_e.append(math.sqrt(sl / hop))
+        high_e.append(math.sqrt(sh / hop))
+    energy = [l + h for l, h in zip(low_e, high_e)]
+    peak = max(energy) or 1.0
+    energy = [e / peak for e in energy]
+
+    onsets, last, win = [], -1e9, int(0.4 * fps)
+    for i in range(2, len(energy)):
+        recent = energy[max(0, i - win):i]
+        avg = sum(recent) / len(recent)
+        rise = energy[i] - max(avg, energy[i - 1])
+        if rise > 0.06 and energy[i] >= energy[i - 1] and i - last > 0.07 * fps:
+            j = max(range(i, min(i + 4, len(energy))), key=lambda k: energy[k])
+            hi = high_e[j] / ((low_e[j] + high_e[j]) or 1)
+            onsets.append((i / fps, min(1.0, rise * 1.1 + 0.2 * energy[j]), hi))
+            last = i
+    env, sm = [], 0.0
+    for e in energy:
+        sm += 0.15 * (e - sm)
+        env.append(sm)
+    return onsets, env, len(x) / arate, fps
+
+
+_COLS = [(255, 40, 0), (255, 190, 0), (255, 0, 140), (0, 220, 80),
+         (60, 100, 255), (255, 255, 255)]
+
+
+def style_fireworks():
+    ring = Ring(0.2)
+    st = {"i": 0}
+
+    def on_onset(t, s, hi):
+        if s > 0.55:                      # big bang: whole ring bursts
+            ring.fill(_COLS[st["i"] % len(_COLS)], 0.55 + 0.45 * s)
+            st["i"] += 1
+        else:                             # crackle: random sparks
+            for _ in range(1 + int(s * 4)):
+                ring.add(random.randrange(LED_COUNT), random.choice(_COLS), 0.6 + 0.4 * s)
+
+    def ambient(t, e):
+        ring.add(int(t * 9) % LED_COUNT, (255, 90, 0), 0.05 + 0.25 * e)
+    return ring, on_onset, ambient
+
+
+def style_diya():
+    ring = Ring(0.4)
+
+    def on_onset(t, s, hi):
+        for i in range(LED_COUNT):
+            ring.add(i, (255, 120 + 80 * hi, 10), 0.3 + 0.6 * s)
+
+    def ambient(t, e):
+        for i in range(LED_COUNT):
+            ring.add(i, (255, 100, 5), (0.04 + 0.22 * e) * random.uniform(0.6, 1))
+    return ring, on_onset, ambient
+
+
+def style_rangoli():
+    ring = Ring(0.3)
+    st = {"hue": 0.0}
+
+    def on_onset(t, s, hi):
+        st["hue"] += 0.08
+        p = random.randrange(LED_COUNT // 2)
+        c = hsv(st["hue"] + 0.4 * hi)
+        for off in (0, LED_COUNT // 2):
+            ring.add(p + off, c, 0.5 + 0.5 * s)
+            ring.add(p + off + 1, c, 0.25 * s)
+            ring.add(p + off - 1, c, 0.25 * s)
+
+    def ambient(t, e):
+        for i in range(LED_COUNT):
+            ring.add(i, hsv(i / LED_COUNT + t * 0.1), 0.02 + 0.18 * e)
+    return ring, on_onset, ambient
+
+
+STYLES = {"fireworks": style_fireworks, "diya": style_diya, "rangoli": style_rangoli}
+
+
+def run_file(wav, style, args):
+    """Play a WAV and light the ring from its beats/loudness."""
+    print("Analysing %s ..." % os.path.basename(wav))
+    onsets, env, dur, fps = analyse_wav(wav)
+    print("%.1fs, %d hits detected" % (dur, len(onsets)))
+    ring, on_onset, ambient = STYLES[style]()
+    strip = open_strip(args.sim)
+    proc = None if args.no_audio else start_audio(wav, args.device)
+    t0, oi, last = time.monotonic(), 0, 0.0
+    try:
+        while True:
+            t = time.monotonic() - t0 - args.latency
+            if t > dur + 0.5:
+                break
+            while oi < len(onsets) and onsets[oi][0] <= t:
+                on_onset(*onsets[oi])
+                oi += 1
+            ring.decay(max(0.0, t - last))
+            last = t
+            ambient(t, env[min(max(int(t * fps), 0), len(env) - 1)])
+            for i in range(LED_COUNT):
+                strip[i] = tuple(int(clamp(c) * args.brightness) for c in ring.px[i])
+            strip.show()
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+        strip.fill(0)
+        strip.show()
+        print("\nShubh Deepavali!")
+
+
 OPTIONS = {
     "1": ("Diya Glow", build_diya, led_diya),
     "2": ("Patakha Fireworks", build_fireworks, led_fireworks),
     "3": ("Rangoli Colours", build_rangoli, led_rangoli),
+    "4": ("Firecracker Sound (audio-synced)", None, None),
 }
 
 
@@ -451,6 +597,8 @@ class SimStrip:
         self.px[i] = c
 
     def fill(self, c):
+        if isinstance(c, int):
+            c = (c, c, c)
         self.px = [c] * LED_COUNT
 
     def show(self):
@@ -461,16 +609,18 @@ class SimStrip:
 
 
 def open_strip(sim):
-    if not sim:
-        try:
-            import board
-            import neopixel_spi as neopixel
-            spi = board.SPI()
-            return neopixel.NeoPixel_SPI(spi, LED_COUNT, pixel_order=neopixel.GRB,
-                                         auto_write=False)
-        except Exception as e:  # not on a Pi
-            print("NeoPixel unavailable (%s) - using terminal simulation" % e)
-    return SimStrip()
+    if sim:
+        return SimStrip()
+    try:
+        import board
+        import neopixel_spi as neopixel
+        spi = board.SPI()
+        return neopixel.NeoPixel_SPI(spi, LED_COUNT, pixel_order=neopixel.GRB,
+                                     auto_write=False)
+    except Exception as e:
+        sys.exit("\n*** NeoPixel ring NOT available: %r\n"
+                 "Run this on the Pi (same python that runs python/1.9_NeoPixel.py).\n"
+                 "Use --sim to preview in the terminal." % e)
 
 
 def find_speaker():
@@ -511,6 +661,9 @@ def start_audio(path, device=None):
 def run(key, args):
     title, build, leds = OPTIONS[key]
     print("\n=== %s ===" % title)
+    if key == "4":
+        run_file(os.path.join(AUDIO_DIR, "fire-cracker-sound.wav"), args.style, args)
+        return
     score = build()
     score.events.sort(key=lambda e: e[0])
     wav = os.path.join(HERE, "diwali_%s.wav" % key)
@@ -559,6 +712,8 @@ def main():
     ap.add_argument("--brightness", type=float, default=0.5)
     ap.add_argument("--latency", type=float, default=0.0,
                     help="seconds to delay LEDs vs audio (negative = earlier)")
+    ap.add_argument("--style", choices=["fireworks", "diya", "rangoli"],
+                    default="fireworks", help="light style for option 4")
     ap.add_argument("--regen", action="store_true", help="re-render the WAV")
     ap.add_argument("--sim", action="store_true", help="draw ring in terminal")
     ap.add_argument("--device", help="ALSA device for aplay, e.g. plughw:0,0 "
@@ -570,8 +725,8 @@ def main():
     if not key:
         for k, (name, _, _) in OPTIONS.items():
             print("  %s) %s" % (k, name))
-        key = input("Choose 1-3 (or 'all'): ").strip()
-    for k in (list(OPTIONS) if key == "all" else [key]):
+        key = input("Choose 1-4 (or 'all'): ").strip()
+    for k in (["1", "2", "3"] if key == "all" else [key]):
         run(k, args)
 
 
