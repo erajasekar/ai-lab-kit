@@ -518,7 +518,7 @@ def style_diya():
 
     def ambient(t, e):
         for i in range(LED_COUNT):
-            ring.add(i, (255, 100, 5), (0.04 + 0.22 * e) * random.uniform(0.6, 1))
+            ring.add(i, (255, 100, 5), (0.004 + 0.02 * e) * random.uniform(0.6, 1))
     return ring, on_onset, ambient
 
 
@@ -537,7 +537,7 @@ def style_rangoli():
 
     def ambient(t, e):
         for i in range(LED_COUNT):
-            ring.add(i, hsv(i / LED_COUNT + t * 0.1), 0.02 + 0.18 * e)
+            ring.add(i, hsv(i / LED_COUNT + t * 0.1), 0.004 + 0.03 * e)
     return ring, on_onset, ambient
 
 
